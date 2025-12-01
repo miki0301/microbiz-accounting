@@ -30,40 +30,36 @@ import {
   orderBy 
 } from 'firebase/firestore';
 
-// --- Firebase 初始化邏輯 (強化路徑安全性) ---
+// --- Firebase 初始化邏輯 ---
 let app, auth, db, googleProvider;
 let appId = 'default_app_id'; // 預設 ID
 
 try {
-  // 1. 判斷是否在預覽環境
+  // 1. 判斷是否在預覽環境 (由系統自動注入 __firebase_config)
   if (typeof __firebase_config !== 'undefined') {
     const firebaseConfig = JSON.parse(__firebase_config);
     app = initializeApp(firebaseConfig);
     auth = getAuth(app);
     db = getFirestore(app);
     
-    // [CRITICAL FIX] 強制淨化 App ID，將所有非英數字符號轉為底線
-    // 這能解決 "Invalid collection reference" 路徑層級錯誤
     if (typeof __app_id !== 'undefined') {
         appId = __app_id.replace(/[^a-zA-Z0-9_-]/g, '_');
     }
   } else {
-    // 2. 本地/Vercel 環境
-    // TODO: 請填入您的 Firebase Config
+    // 2. 本地/Vercel 環境 (使用您提供的設定)
     const localConfig = {
-      apiKey: "請填入API_KEY",
-      authDomain: "project-id.firebaseapp.com",
-      projectId: "project-id",
-      storageBucket: "project-id.firebasestorage.app",
-      messagingSenderId: "sender-id",
-      appId: "app-id"
+      apiKey: "AIzaSyCH8ZyQXxxi1Psd6itOj4C_ksyyagZrdHs",
+      authDomain: "microbiz-accounting.firebaseapp.com",
+      projectId: "microbiz-accounting",
+      storageBucket: "microbiz-accounting.firebasestorage.app",
+      messagingSenderId: "258532246326",
+      appId: "1:258532246326:web:9d9c12830ed92e4d26e997",
+      measurementId: "G-4XXNJEVEVL"
     };
     
-    if (localConfig.apiKey !== "請填入API_KEY") {
-        app = initializeApp(localConfig);
-        auth = getAuth(app);
-        db = getFirestore(app);
-    }
+    app = initializeApp(localConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
   }
   
   if (auth) {
@@ -228,6 +224,7 @@ export default function MicroBizApp() {
     paymentStatus: 'paid',
   });
 
+  // --- 自動試算邏輯 ---
   const calculateDeductions = (amount, category) => {
     if (['salary', 'part_time'].includes(category)) {
         const amt = parseFloat(amount) || 0;
@@ -262,6 +259,7 @@ export default function MicroBizApp() {
     }));
   };
 
+  // --- Firebase 操作 ---
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!formData.amount || !formData.category) {
@@ -325,6 +323,7 @@ export default function MicroBizApp() {
       });
   };
 
+  // 登入與登出
   const handleGoogleLogin = async () => {
       if (!auth) {
           alert("Firebase 設定未完成");
@@ -539,6 +538,7 @@ export default function MicroBizApp() {
       
       <main className="max-w-md mx-auto bg-white min-h-screen shadow-2xl relative">
         
+        {/* --- Home View --- */}
         {activeTab === 'home' && (
           <div className="space-y-6 pb-20">
             <header className="bg-slate-800 text-white p-6 rounded-b-3xl shadow-lg relative">
