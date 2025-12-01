@@ -1,38 +1,97 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Plus, 
-  Minus, 
-  FileText, 
-  PieChart, 
-  Home, 
-  Save, 
-  Trash2, 
-  Receipt, 
-  QrCode, 
-  MoreHorizontal,
-  AlertCircle,
-  TrendingUp,
-  TrendingDown,
-  Wallet,
-  Download,
-  FileSpreadsheet,
-  Printer,
-  User,
-  MapPin,
-  ArrowRight,
-  ChevronLeft,
-  ChevronRight,
-  BarChart3,
-  Train,
-  Calculator,
-  Settings,
-  X,
-  Briefcase,
-  Clock,
-  CheckCircle,
-  AlertTriangle,
-  BellRing
+  Plus, Minus, FileText, PieChart, Home, Save, Trash2, Receipt, QrCode, 
+  MoreHorizontal, AlertCircle, TrendingUp, TrendingDown, Wallet, Download, 
+  FileSpreadsheet, Printer, User, MapPin, ArrowRight, ChevronLeft, ChevronRight, 
+  BarChart3, Train, Calculator, Settings, X, Briefcase, Clock, CheckCircle, 
+  AlertTriangle, BellRing, LogOut, LogIn
 } from 'lucide-react';
+
+// --- Firebase SDK 導入 ---
+import { initializeApp } from "firebase/app";
+import { 
+  getAuth, 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  signOut,
+  signInAnonymously,
+  signInWithCustomToken
+} from "firebase/auth";
+import { 
+  getFirestore, 
+  collection, 
+  addDoc, 
+  query, 
+  onSnapshot, 
+  deleteDoc, 
+  doc, 
+  updateDoc, 
+  orderBy 
+} from 'firebase/firestore';
+
+// --- Firebase 初始化邏輯 (強化路徑安全性) ---
+let app, auth, db, googleProvider;
+let appId = 'default_app_id'; // 預設 ID
+
+try {
+  // 1. 判斷是否在預覽環境
+  if (typeof __firebase_config !== 'undefined') {
+    const firebaseConfig = JSON.parse(__firebase_config);
+    app = initializeApp(firebaseConfig);
+    auth = getAuth(app);
+    db = getFirestore(app);
+    
+    // [CRITICAL FIX] 強制淨化 App ID，將所有非英數字符號轉為底線
+    // 這能解決 "Invalid collection reference" 路徑層級錯誤
+    if (typeof __app_id !== 'undefined') {
+        appId = __app_id.replace(/[^a-zA-Z0-9_-]/g, '_');
+    }
+  } else {
+    // 2. 本地/Vercel 環境
+    // TODO: 請填入您的 Firebase Config
+    const localConfig = {
+      apiKey: "請填入API_KEY",
+      authDomain: "project-id.firebaseapp.com",
+      projectId: "project-id",
+      storageBucket: "project-id.firebasestorage.app",
+      messagingSenderId: "sender-id",
+      appId: "app-id"
+    };
+    
+    if (localConfig.apiKey !== "請填入API_KEY") {
+        app = initializeApp(localConfig);
+        auth = getAuth(app);
+        db = getFirestore(app);
+    }
+  }
+  
+  if (auth) {
+      googleProvider = new GoogleAuthProvider();
+  }
+
+} catch (e) {
+  console.error("Firebase Init Error:", e);
+}
+
+// --- 輔助函數：取得資料庫路徑 ---
+const getTransCollection = (database, uid) => {
+    if (!database || !uid) return null;
+    // 預覽環境路徑
+    if (typeof __firebase_config !== 'undefined') {
+        return collection(database, 'artifacts', appId, 'users', uid, 'transactions');
+    }
+    // 正式環境路徑
+    return collection(database, 'users', uid, 'transactions');
+};
+
+const getTransDoc = (database, uid, docId) => {
+    if (!database || !uid || !docId) return null;
+    if (typeof __firebase_config !== 'undefined') {
+        return doc(database, 'artifacts', appId, 'users', uid, 'transactions', docId);
+    }
+    return doc(database, 'users', uid, 'transactions', docId);
+};
 
 // --- 定義會計科目分類 ---
 const INCOME_CATEGORIES = [
@@ -73,20 +132,79 @@ const getVoucherName = (type) => {
 };
 
 export default function MicroBizApp() {
+  const [user, setUser] = useState(null); 
+  const [loading, setLoading] = useState(true); 
   const [activeTab, setActiveTab] = useState('home'); 
   const [currentDate, setCurrentDate] = useState(new Date()); 
   const [showSettings, setShowSettings] = useState(false); 
 
-  const [transactions, setTransactions] = useState(() => {
-    const saved = localStorage.getItem('microBizTransactions');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [companyCapital, setCompanyCapital] = useState(() => {
-    const saved = localStorage.getItem('microBizCapital');
-    return saved ? saved : ''; 
-  });
+  const [transactions, setTransactions] = useState([]);
+  const [companyCapital, setCompanyCapital] = useState(0); 
   
+  // 1. 登入狀態監聽
+  useEffect(() => {
+    if (!auth) {
+        setLoading(false);
+        return;
+    }
+
+    const initAuth = async () => {
+        try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else if (typeof __firebase_config !== 'undefined') {
+                await signInAnonymously(auth);
+            }
+        } catch (err) {
+            console.error("Auth Init Error:", err);
+        }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. 資料庫監聽
+  useEffect(() => {
+    if (!user || !db) {
+        setTransactions([]);
+        return;
+    }
+
+    try {
+        const collRef = getTransCollection(db, user.uid);
+        if (!collRef) return;
+
+        const q = query(collRef, orderBy("date", "desc"));
+        
+        const unsubscribeTrans = onSnapshot(q, (snapshot) => {
+          const transData = snapshot.docs.map(doc => ({
+            id: doc.id,
+            ...doc.data()
+          }));
+          setTransactions(transData);
+        }, (error) => {
+            console.error("Data Fetch Error:", error);
+        });
+
+        const savedCapital = localStorage.getItem(`capital_${user.uid}`);
+        if (savedCapital) setCompanyCapital(Number(savedCapital));
+
+        return () => unsubscribeTrans();
+    } catch (err) {
+        console.error("Query Setup Error:", err);
+    }
+  }, [user]);
+
+  const handleUpdateCapital = (val) => {
+      setCompanyCapital(val);
+      if(user) localStorage.setItem(`capital_${user.uid}`, val);
+  };
+
   const [formData, setFormData] = useState({
     type: 'expense',
     date: new Date().toISOString().split('T')[0],
@@ -110,15 +228,6 @@ export default function MicroBizApp() {
     paymentStatus: 'paid',
   });
 
-  useEffect(() => {
-    localStorage.setItem('microBizTransactions', JSON.stringify(transactions));
-  }, [transactions]);
-
-  useEffect(() => {
-    localStorage.setItem('microBizCapital', companyCapital.toString());
-  }, [companyCapital]);
-
-  // --- 自動試算邏輯 ---
   const calculateDeductions = (amount, category) => {
     if (['salary', 'part_time'].includes(category)) {
         const amt = parseFloat(amount) || 0;
@@ -153,13 +262,84 @@ export default function MicroBizApp() {
     }));
   };
 
-  const togglePaymentStatus = (id) => {
-      setTransactions(transactions.map(t => {
-          if (t.id === id) {
-              return { ...t, paymentStatus: t.paymentStatus === 'paid' ? 'unpaid' : 'paid' };
-          }
-          return t;
-      }));
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!formData.amount || !formData.category) {
+      alert('請輸入金額與分類');
+      return;
+    }
+    if (!user || !db) {
+        alert("資料庫未連接");
+        return;
+    }
+
+    try {
+        const collRef = getTransCollection(db, user.uid);
+        await addDoc(collRef, {
+            ...formData,
+            amount: parseFloat(formData.amount),
+            taxWithheld: parseFloat(formData.taxWithheld) || 0,
+            healthIns: parseFloat(formData.healthIns) || 0,
+            paymentTerms: parseInt(formData.paymentTerms) || 0,
+            createdAt: new Date()
+        });
+
+        setFormData({
+            ...formData,
+            amount: '',
+            note: '',
+            customerName: '',
+            paymentTerms: 0,
+            paymentStatus: 'paid',
+            applicantName: '',
+            travelStart: '',
+            travelEnd: '',
+            travelMethod: '',
+            payeeName: '',
+            payeeId: '',
+            payeeAddress: '',
+            taxWithheld: 0,
+            healthIns: 0,
+        });
+        
+        alert('紀錄已儲存至雲端！');
+        setActiveTab('home');
+    } catch (err) {
+        console.error("Add Doc Error:", err);
+        alert("儲存失敗");
+    }
+  };
+
+  const deleteTransaction = async (id) => {
+    if (confirm('確定要刪除這筆紀錄嗎？')) {
+        const docRef = getTransDoc(db, user.uid, id);
+        await deleteDoc(docRef);
+    }
+  };
+
+  const togglePaymentStatus = async (id, currentStatus) => {
+      const newStatus = currentStatus === 'paid' ? 'unpaid' : 'paid';
+      const docRef = getTransDoc(db, user.uid, id);
+      await updateDoc(docRef, {
+          paymentStatus: newStatus
+      });
+  };
+
+  const handleGoogleLogin = async () => {
+      if (!auth) {
+          alert("Firebase 設定未完成");
+          return;
+      }
+      try {
+          await signInWithPopup(auth, googleProvider);
+      } catch (error) {
+          console.error("Login failed", error);
+          alert("登入失敗: " + error.message);
+      }
+  };
+
+  const handleLogout = async () => {
+      if (auth) await signOut(auth);
   };
 
   const stats = useMemo(() => {
@@ -270,53 +450,6 @@ export default function MicroBizApp() {
     setCurrentDate(newDate);
   };
 
-  const handleSubmit = (e) => {
-    e.preventDefault();
-    if (!formData.amount || !formData.category) {
-      alert('請輸入金額與分類');
-      return;
-    }
-
-    const newTransaction = {
-      id: Date.now().toString(),
-      ...formData,
-      amount: parseFloat(formData.amount),
-      taxWithheld: parseFloat(formData.taxWithheld) || 0,
-      healthIns: parseFloat(formData.healthIns) || 0,
-      paymentTerms: parseInt(formData.paymentTerms) || 0,
-    };
-
-    setTransactions([newTransaction, ...transactions]);
-    setCurrentDate(new Date(formData.date));
-
-    setFormData({
-      ...formData,
-      amount: '',
-      note: '',
-      customerName: '',
-      paymentTerms: 0,
-      paymentStatus: 'paid',
-      applicantName: '',
-      travelStart: '',
-      travelEnd: '',
-      travelMethod: '',
-      payeeName: '',
-      payeeId: '',
-      payeeAddress: '',
-      taxWithheld: 0,
-      healthIns: 0,
-    });
-    
-    alert('紀錄已儲存！');
-    setActiveTab('home');
-  };
-
-  const deleteTransaction = (id) => {
-    if (confirm('確定要刪除這筆紀錄嗎？')) {
-      setTransactions(transactions.filter(t => t.id !== id));
-    }
-  };
-
   const exportToCSV = () => {
     if (transactions.length === 0) return;
     const headers = ["交易日期", "收支類型", "會計科目", "金額", "客戶名稱", "付款條件", "收款狀態", "憑證類型", "備註", "申請人", "起點", "終點", "交通方式", "所得人", "統編/ID", "代扣稅", "二代健保"];
@@ -360,13 +493,45 @@ export default function MicroBizApp() {
                   <label className="block text-sm font-bold text-slate-600 mb-2">公司資本額 (初始資金)</label>
                   <div className="relative">
                     <span className="absolute left-3 top-3 text-slate-400 font-mono">$</span>
-                    <input type="number" value={companyCapital} onChange={(e) => setCompanyCapital(e.target.value)} className="w-full pl-8 p-3 border border-slate-300 rounded-xl outline-none text-lg font-bold text-slate-700" placeholder="0" />
+                    <input type="number" value={companyCapital} onChange={(e) => handleUpdateCapital(e.target.value)} className="w-full pl-8 p-3 border border-slate-300 rounded-xl outline-none text-lg font-bold text-slate-700" placeholder="0" />
                   </div>
               </div>
-              <button onClick={() => setShowSettings(false)} className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold">完成</button>
+              
+              <div className="pt-4 border-t border-slate-100 flex flex-col gap-3">
+                  <button onClick={() => setShowSettings(false)} className="w-full bg-slate-800 text-white py-3 rounded-xl font-bold">完成</button>
+                  <button onClick={handleLogout} className="w-full bg-rose-50 text-rose-600 py-3 rounded-xl font-bold flex items-center justify-center gap-2"><LogOut size={18}/> 登出帳號</button>
+              </div>
           </div>
       </div>
   );
+
+  const LoginView = () => (
+      <div className="min-h-screen bg-slate-50 flex flex-col items-center justify-center p-4">
+          <div className="bg-white p-8 rounded-2xl shadow-xl w-full max-w-sm text-center">
+              <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                  <Briefcase className="text-blue-600" size={40} />
+              </div>
+              <h1 className="text-2xl font-bold text-slate-800 mb-2">微型企業記帳本</h1>
+              <p className="text-slate-500 mb-8">雲端同步，安全管理您的帳務</p>
+              
+              <button 
+                onClick={handleGoogleLogin}
+                className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg hover:bg-slate-800 transition-all"
+              >
+                  <LogIn size={20} /> 使用 Google 登入
+              </button>
+              
+              {!auth && (
+                  <p className="text-xs text-rose-500 mt-4 bg-rose-50 p-2 rounded">
+                      ⚠️ 尚未設定 Firebase Config。<br/>請在原始碼中填入您的專案設定。
+                  </p>
+              )}
+          </div>
+      </div>
+  );
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-400">載入中...</div>;
+  if (!user) return <LoginView />;
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
@@ -374,12 +539,16 @@ export default function MicroBizApp() {
       
       <main className="max-w-md mx-auto bg-white min-h-screen shadow-2xl relative">
         
-        {/* --- Home View --- */}
         {activeTab === 'home' && (
           <div className="space-y-6 pb-20">
             <header className="bg-slate-800 text-white p-6 rounded-b-3xl shadow-lg relative">
               <div className="flex justify-between items-center mb-4">
-                  <h1 className="text-xl font-bold">微型企業管帳</h1>
+                  <div className="flex items-center gap-2">
+                    <h1 className="text-xl font-bold">微型企業管帳</h1>
+                    <span className="text-[10px] bg-slate-700 px-2 py-1 rounded text-slate-300">
+                        {user.isAnonymous ? '訪客模式' : user.displayName}
+                    </span>
+                  </div>
                   <button onClick={() => setShowSettings(true)} className="p-2 bg-slate-700 rounded-full hover:bg-slate-600 transition-colors">
                       <Settings size={20} className="text-slate-200" />
                   </button>
@@ -419,7 +588,7 @@ export default function MicroBizApp() {
                                     </div>
                                     <div className="text-right">
                                         <div className="font-bold text-rose-700">${inv.amount.toLocaleString()}</div>
-                                        <button onClick={() => togglePaymentStatus(inv.id)} className="text-[10px] bg-rose-100 text-rose-700 px-2 py-1 rounded mt-1 hover:bg-rose-200">標記已收</button>
+                                        <button onClick={() => togglePaymentStatus(inv.id, inv.paymentStatus)} className="text-[10px] bg-rose-100 text-rose-700 px-2 py-1 rounded mt-1 hover:bg-rose-200">標記已收</button>
                                     </div>
                                 </div>
                             ))}
@@ -467,7 +636,7 @@ export default function MicroBizApp() {
                                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${t.type === 'income' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{t.type === 'income' ? '收' : '支'}</span>
                                   <span className="font-bold text-slate-700 text-sm">{t.type === 'income' && t.customerName ? t.customerName : getCategoryName(t.category, t.type)}</span>
                                   {t.type === 'income' && (
-                                      <button onClick={(e) => { e.stopPropagation(); togglePaymentStatus(t.id); }} className={`text-[9px] px-1.5 py-0.5 rounded border flex items-center gap-1 cursor-pointer transition-colors ${t.paymentStatus === 'paid' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-orange-50 text-orange-600 border-orange-200'}`}>
+                                      <button onClick={(e) => { e.stopPropagation(); togglePaymentStatus(t.id, t.paymentStatus); }} className={`text-[9px] px-1.5 py-0.5 rounded border flex items-center gap-1 cursor-pointer transition-colors ${t.paymentStatus === 'paid' ? 'bg-emerald-50 text-emerald-600 border-emerald-200' : 'bg-orange-50 text-orange-600 border-orange-200'}`}>
                                           {t.paymentStatus === 'paid' ? <CheckCircle size={8}/> : <Clock size={8}/>}
                                           {t.paymentStatus === 'paid' ? '已收款' : '未收款'}
                                       </button>
@@ -597,7 +766,6 @@ export default function MicroBizApp() {
                 </div>
               )}
 
-              {/* 憑證選擇 - Re-added */}
               <div>
                 <label className="block text-sm font-medium text-slate-600 mb-2">憑證種類</label>
                 <div className="grid grid-cols-3 gap-3">
@@ -654,7 +822,7 @@ export default function MicroBizApp() {
                   <button onClick={exportToCSV} className="bg-emerald-600 text-white px-3 py-3 rounded-xl text-sm font-bold flex flex-col items-center justify-center gap-1 shadow hover:bg-emerald-700 active:scale-95 transition-transform">
                       <FileSpreadsheet size={20} /> <span>1. 匯出 Excel (明細)</span>
                   </button>
-                  {/* Print Preview Button omitted as logic is complex, assuming user knows to use browser print or I can add basic print view trigger */}
+                  {/* Print Preview - Basic Browser Print */}
                   <button onClick={() => window.print()} className="bg-blue-600 text-white px-3 py-3 rounded-xl text-sm font-bold flex flex-col items-center justify-center gap-1 shadow hover:bg-blue-700 active:scale-95 transition-transform">
                       <Printer size={20} /> <span>2. 列印報表 (PDF)</span>
                   </button>
