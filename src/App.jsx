@@ -131,14 +131,11 @@ export default function MicroBizApp() {
 
   const handleAmountChange = (e) => {
     const newAmount = e.target.value;
-    // 使用當前的 category 來判斷是否需要試算
-    // 注意：這裡使用 formData.category，因為它是從閉包中獲取的最新狀態（在 render 週期內）
     const { tax, health } = calculateDeductions(newAmount, formData.category);
     
     setFormData(prev => ({
         ...prev,
         amount: newAmount,
-        // 只有當前類別是薪資類才更新稅額，否則保留原值
         taxWithheld: ['salary', 'part_time'].includes(prev.category) ? tax : prev.taxWithheld,
         healthIns: ['salary', 'part_time'].includes(prev.category) ? health : prev.healthIns
     }));
@@ -146,13 +143,11 @@ export default function MicroBizApp() {
 
   const handleCategoryChange = (e) => {
     const newCategory = e.target.value;
-    // 切換分類時，用現有金額重新試算
     const { tax, health } = calculateDeductions(formData.amount, newCategory);
 
     setFormData(prev => ({
         ...prev,
         category: newCategory,
-        // 切換到薪資類自動填入，切換走則歸零
         taxWithheld: ['salary', 'part_time'].includes(newCategory) ? tax : 0,
         healthIns: ['salary', 'part_time'].includes(newCategory) ? health : 0
     }));
@@ -353,8 +348,7 @@ export default function MicroBizApp() {
   };
 
   // --- UI Components ---
-  // 將子組件移出主渲染邏輯或內聯，以確保 React Reconciliation 穩定
-
+  
   const SettingsModal = () => (
       <div className="fixed inset-0 bg-black/50 z-[60] flex items-center justify-center p-4 animation-fade-in" onClick={(e) => e.stopPropagation()}>
           <div className="bg-white rounded-2xl w-full max-w-sm p-6 shadow-2xl">
@@ -602,6 +596,32 @@ export default function MicroBizApp() {
                   </div>
                 </div>
               )}
+
+              {/* 憑證選擇 - Re-added */}
+              <div>
+                <label className="block text-sm font-medium text-slate-600 mb-2">憑證種類</label>
+                <div className="grid grid-cols-3 gap-3">
+                  {[
+                    { id: 'paper', label: '紙本', icon: Receipt },
+                    { id: 'electronic', label: '電子', icon: QrCode },
+                    { id: 'other', label: '其他', icon: MoreHorizontal },
+                  ].map(v => (
+                    <button
+                      key={v.id}
+                      type="button"
+                      onClick={() => setFormData({...formData, voucherType: v.id})}
+                      className={`p-3 rounded-xl border flex flex-col items-center gap-1 transition-all ${
+                        formData.voucherType === v.id 
+                          ? 'border-blue-500 bg-blue-50 text-blue-700' 
+                          : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                      }`}
+                    >
+                      <v.icon size={20} />
+                      <span className="text-sm">{v.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {formData.type === 'expense' && (
                 <div className="bg-amber-50 p-4 rounded-xl border border-amber-100 flex items-start gap-3">
